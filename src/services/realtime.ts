@@ -13,14 +13,15 @@ export interface RoomChannelHandle {
 }
 
 export async function createRoomChannel(roomCode: string, playerId: string, handlers: RoomHandlers): Promise<RoomChannelHandle> {
-  if (!supabase || !isSupabaseConfigured) {
+  const client = supabase;
+  if (!client || !isSupabaseConfigured) {
     return {
       send: async () => undefined,
       disconnect: async () => undefined,
     };
   }
 
-  const channel = supabase.channel(`room:${roomCode}`, {
+  const channel = client.channel(`room:${roomCode}`, {
     config: {
       broadcast: { self: true },
       presence: { key: playerId },
@@ -64,7 +65,7 @@ export async function createRoomChannel(roomCode: string, playerId: string, hand
       await channel.send({ type: 'broadcast', event: message.type, payload: message });
     },
     disconnect: async () => {
-      await supabase.removeChannel(channel);
+      await client.removeChannel(channel);
     },
   };
 }

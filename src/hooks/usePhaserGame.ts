@@ -43,7 +43,7 @@ export function usePhaserGame({
       physics: {
         default: 'arcade',
         arcade: {
-          gravity: { y: 0 },
+          gravity: { x: 0, y: 0 },
           debug: false,
         },
       },
@@ -75,6 +75,6 @@ export function usePhaserGame({
 
   useEffect(() => {
     const scene = gameRef.current?.scene.getScene('GameScene') as GameScene | undefined;
-    scene?.setSnapshot({ room, players, localPlayerId, onMove, onTag, onTeleport, onBounce });
+    scene?.setSnapshot({ ...(room ? { room } : {}), players, localPlayerId, onMove, onTag, onTeleport, onBounce });
   }, [localPlayerId, onBounce, onMove, onTag, onTeleport, players, room]);
 }
