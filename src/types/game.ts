@@ -2,6 +2,8 @@ export type MapId = 'grassland' | 'winterArena' | 'desertRuins';
 export type RoomStatus = 'lobby' | 'running' | 'paused' | 'ended';
 export type RoundDuration = 60 | 120 | 180;
 export type ConnectionState = 'offline' | 'connecting' | 'connected' | 'error';
+export type PlayMode = 'home' | 'local' | 'online';
+export type ControlScheme = 'wasd' | 'arrows';
 
 export interface Vector2 {
   x: number;
@@ -20,6 +22,7 @@ export interface PlayerState extends Vector2 {
   color: string;
   speedBoostUntil: number;
   lastUpdatedAt: number;
+  controlScheme?: ControlScheme;
 }
 
 export interface RoomState {
@@ -96,6 +99,7 @@ export interface ClientSession {
   playerId: string;
   nickname: string;
   roomCode: string | null;
+  playMode: PlayMode;
 }
 
 export interface RoomSnapshot {

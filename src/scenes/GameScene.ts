@@ -1,14 +1,15 @@
 import Phaser from 'phaser';
-import { MapDefinition, PlayerState, RoomState } from '@/types/game';
+import { ControlScheme, MapDefinition, PlayMode, PlayerState, RoomState } from '@/types/game';
 import { clamp, rectsOverlap } from '@/utils/math';
 
 interface GameSceneConfig {
+  mode: PlayMode;
   map: MapDefinition;
   room: RoomState;
   players: PlayerState[];
   localPlayerId: string | null;
-  onMove: (x: number, y: number) => void;
-  onTag: (taggedPlayerId: string) => void;
+  onMove: (playerId: string, x: number, y: number) => void;
+  onTag: (actorId: string, taggedPlayerId: string) => void;
   onTeleport: (playerId: string, x: number, y: number) => void;
   onBounce: (playerId: string, impulseX: number, impulseY: number) => void;
 }
@@ -17,6 +18,18 @@ type SpriteEntry = {
   body: Phaser.Physics.Arcade.Image;
   label: Phaser.GameObjects.Text;
   crown?: Phaser.GameObjects.Text;
+  baseTint: number;
+};
+
+type KeyGroup = {
+  W?: Phaser.Input.Keyboard.Key;
+  A?: Phaser.Input.Keyboard.Key;
+  S?: Phaser.Input.Keyboard.Key;
+  D?: Phaser.Input.Keyboard.Key;
+  UP?: Phaser.Input.Keyboard.Key;
+  LEFT?: Phaser.Input.Keyboard.Key;
+  DOWN?: Phaser.Input.Keyboard.Key;
+  RIGHT?: Phaser.Input.Keyboard.Key;
 };
 
 export class GameScene extends Phaser.Scene {
@@ -25,11 +38,10 @@ export class GameScene extends Phaser.Scene {
   private readonly wallRects: Phaser.GameObjects.Rectangle[] = [];
   private readonly bouncePadRects: Phaser.GameObjects.Rectangle[] = [];
   private readonly teleporterRects = new Map<string, Phaser.GameObjects.Rectangle>();
-  private cursorKeys: Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key> | null = null;
-  private localVelocity = new Phaser.Math.Vector2();
-  private lastBroadcastAt = 0;
+  private keyGroup: KeyGroup = {};
+  private lastBroadcastAt = new Map<string, number>();
+  private lastSpecialAt = new Map<string, number>();
   private lastTagAt = 0;
-  private lastSpecialAt = 0;
 
   constructor(configData: GameSceneConfig) {
     super('GameScene');
@@ -49,85 +61,43 @@ export class GameScene extends Phaser.Scene {
 
     this.configData.players.forEach((player, index) => this.spawnOrUpdatePlayer(player, index));
     this.cameras.main.setBounds(0, 0, map.width, map.height);
-    this.cursorKeys = this.input.keyboard?.addKeys('W,A,S,D') as Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
+    this.keyGroup = this.input.keyboard?.addKeys('W,A,S,D,UP,LEFT,DOWN,RIGHT') as KeyGroup;
   }
 
   update(): void {
-    const { players, localPlayerId, map, onMove, room } = this.configData;
+    const { players, localPlayerId, map, onMove, onTag, onBounce, onTeleport, mode, room } = this.configData;
+
+    if (mode === 'local') {
+      players.forEach((player, index) => {
+        const sprite = this.playerSprites.get(player.id);
+        if (!sprite) return;
+
+        const velocity = this.getVelocityForPlayer(player.controlScheme ?? (index === 0 ? 'wasd' : 'arrows'));
+        const speed = player.speedBoostUntil > Date.now() ? 300 : 210;
+        this.applyMovement(player, sprite, map, velocity, speed, onMove);
+        this.handleEnvironmentForPlayer(player, sprite, map, onBounce, onTeleport);
+        this.handleTaggingForPlayer(player, sprite, players, onTag, mode);
+        this.syncLabel(sprite, isIt(player));
+        if (index === 0) {
+          this.cameras.main.centerOn(sprite.body.x, sprite.body.y);
+        }
+      });
+      return;
+    }
+
     const localPlayer = localPlayerId ? players.find((player) => player.id === localPlayerId) : null;
     if (!localPlayer) return;
 
     const sprite = this.playerSprites.get(localPlayer.id);
     if (!sprite) return;
 
-    this.localVelocity.set(0, 0);
-    if (this.cursorKeys?.W.isDown) this.localVelocity.y -= 1;
-    if (this.cursorKeys?.S.isDown) this.localVelocity.y += 1;
-    if (this.cursorKeys?.A.isDown) this.localVelocity.x -= 1;
-    if (this.cursorKeys?.D.isDown) this.localVelocity.x += 1;
-
+    const velocity = this.getVelocityForPlayer(localPlayer.controlScheme ?? 'wasd');
     const speed = localPlayer.speedBoostUntil > Date.now() ? 300 : 210;
-    const velocity = this.localVelocity.clone();
-    if (velocity.length() > 1) velocity.normalize();
-
-    sprite.body.setVelocity(velocity.x * speed, velocity.y * speed);
-    sprite.body.x = clamp(sprite.body.x, 18, map.width - 18);
-    sprite.body.y = clamp(sprite.body.y, 18, map.height - 18);
-    sprite.label.setPosition(sprite.body.x - 36, sprite.body.y - 42);
-    if (sprite.crown) {
-      sprite.crown.setPosition(sprite.body.x - 10, sprite.body.y - 68);
-    }
-
+    this.applyMovement(localPlayer, sprite, map, velocity, speed, onMove);
+    this.handleEnvironmentForPlayer(localPlayer, sprite, map, onBounce, onTeleport);
+    this.handleTaggingForPlayer(localPlayer, sprite, players, onTag, mode, room.currentItId);
+    this.syncLabel(sprite, isIt(localPlayer));
     this.cameras.main.centerOn(sprite.body.x, sprite.body.y);
-
-    if (Date.now() - this.lastBroadcastAt >= 50) {
-      this.lastBroadcastAt = Date.now();
-      onMove(sprite.body.x, sprite.body.y);
-    }
-
-    this.wallRects.forEach((wall) => {
-      const bounds = wall.getBounds();
-      if (rectsOverlap(sprite.body.getBounds(), bounds)) {
-        this.resolveWallCollision(sprite.body, bounds);
-      }
-    });
-
-    this.bouncePadRects.forEach((pad) => {
-      const bounds = pad.getBounds();
-      if (!rectsOverlap(sprite.body.getBounds(), bounds)) return;
-      if (Date.now() - this.lastSpecialAt < 300) return;
-      const entry = map.bouncePads.find((item) => item.x === pad.x && item.y === pad.y);
-      if (entry) {
-        this.lastSpecialAt = Date.now();
-        this.configData.onBounce(localPlayer.id, entry.impulseX, entry.impulseY);
-      }
-    });
-
-    this.teleporterRects.forEach((teleporter, id) => {
-      if (!rectsOverlap(sprite.body.getBounds(), teleporter.getBounds())) return;
-      if (Date.now() - this.lastSpecialAt < 500) return;
-      const source = map.teleporters.find((entry) => entry.id === id);
-      if (!source) return;
-      const target = map.teleporters.find((entry) => entry.id === source.pairId);
-      if (target) {
-        this.lastSpecialAt = Date.now();
-        this.configData.onTeleport(localPlayer.id, target.x + target.width / 2, target.y + target.height / 2);
-      }
-    });
-
-    if (room.currentItId === localPlayer.id && Date.now() - this.lastTagAt > 300) {
-      const localBounds = sprite.body.getBounds();
-      for (const player of players) {
-        if (player.id === localPlayer.id) continue;
-        const other = this.playerSprites.get(player.id);
-        if (!other) continue;
-        if (rectsOverlap(localBounds, other.body.getBounds())) {
-          this.lastTagAt = Date.now();
-          this.configData.onTag(player.id);
-          break;
-        }
-      }
-    }
   }
 
   setSnapshot(next: Partial<GameSceneConfig>): void {
@@ -144,6 +114,125 @@ export class GameScene extends Phaser.Scene {
       }
       next.players.forEach((player, index) => this.spawnOrUpdatePlayer(player, index));
     }
+  }
+
+  private getVelocityForPlayer(controlScheme: ControlScheme): Phaser.Math.Vector2 {
+    const vector = new Phaser.Math.Vector2();
+    if (controlScheme === 'wasd') {
+      if (this.keyGroup.W?.isDown) vector.y -= 1;
+      if (this.keyGroup.S?.isDown) vector.y += 1;
+      if (this.keyGroup.A?.isDown) vector.x -= 1;
+      if (this.keyGroup.D?.isDown) vector.x += 1;
+    } else {
+      if (this.keyGroup.UP?.isDown) vector.y -= 1;
+      if (this.keyGroup.DOWN?.isDown) vector.y += 1;
+      if (this.keyGroup.LEFT?.isDown) vector.x -= 1;
+      if (this.keyGroup.RIGHT?.isDown) vector.x += 1;
+    }
+    return vector;
+  }
+
+  private applyMovement(
+    player: PlayerState,
+    sprite: SpriteEntry,
+    map: MapDefinition,
+    velocity: Phaser.Math.Vector2,
+    speed: number,
+    onMove: GameSceneConfig['onMove'],
+  ): void {
+    if (velocity.length() > 1) velocity.normalize();
+    sprite.body.setVelocity(velocity.x * speed, velocity.y * speed);
+    sprite.body.x = clamp(sprite.body.x, 18, map.width - 18);
+    sprite.body.y = clamp(sprite.body.y, 18, map.height - 18);
+    this.syncLabel(sprite, player.isIt);
+
+    const now = Date.now();
+    const previous = this.lastBroadcastAt.get(player.id) ?? 0;
+    if (now - previous >= 50) {
+      this.lastBroadcastAt.set(player.id, now);
+      onMove(player.id, sprite.body.x, sprite.body.y);
+    }
+  }
+
+  private handleEnvironmentForPlayer(
+    player: PlayerState,
+    sprite: SpriteEntry,
+    map: MapDefinition,
+    onBounce: GameSceneConfig['onBounce'],
+    onTeleport: GameSceneConfig['onTeleport'],
+  ): void {
+    const playerBounds = sprite.body.getBounds();
+    this.wallRects.forEach((wall) => {
+      const bounds = wall.getBounds();
+      if (rectsOverlap(playerBounds, bounds)) {
+        this.resolveWallCollision(sprite.body, bounds);
+      }
+    });
+
+    this.bouncePadRects.forEach((pad) => {
+      const bounds = pad.getBounds();
+      if (!rectsOverlap(sprite.body.getBounds(), bounds)) return;
+      const lastHit = this.lastSpecialAt.get(`${player.id}:bounce`) ?? 0;
+      if (Date.now() - lastHit < 300) return;
+      const entry = map.bouncePads.find((item) => item.x === pad.x && item.y === pad.y);
+      if (entry) {
+        this.lastSpecialAt.set(`${player.id}:bounce`, Date.now());
+        onBounce(player.id, entry.impulseX, entry.impulseY);
+      }
+    });
+
+    this.teleporterRects.forEach((teleporter, id) => {
+      if (!rectsOverlap(sprite.body.getBounds(), teleporter.getBounds())) return;
+      const lastHit = this.lastSpecialAt.get(`${player.id}:teleport`) ?? 0;
+      if (Date.now() - lastHit < 500) return;
+      const source = map.teleporters.find((entry) => entry.id === id);
+      if (!source) return;
+      const target = map.teleporters.find((entry) => entry.id === source.pairId);
+      if (target) {
+        this.lastSpecialAt.set(`${player.id}:teleport`, Date.now());
+        onTeleport(player.id, target.x + target.width / 2, target.y + target.height / 2);
+      }
+    });
+
+  }
+
+  private handleTaggingForPlayer(
+    player: PlayerState,
+    sprite: SpriteEntry,
+    players: PlayerState[],
+    onTag: GameSceneConfig['onTag'],
+    mode: PlayMode,
+    currentItId?: string | null,
+  ): void {
+    if (Date.now() - this.lastTagAt < 300) return;
+    const attackerId = mode === 'local' ? (player.isIt ? player.id : null) : currentItId === player.id ? player.id : null;
+    if (!attackerId) return;
+
+    const attackerBounds = sprite.body.getBounds();
+    for (const target of players) {
+      if (target.id === player.id) continue;
+      const targetSprite = this.playerSprites.get(target.id);
+      if (!targetSprite) continue;
+      if (rectsOverlap(attackerBounds, targetSprite.body.getBounds())) {
+        this.lastTagAt = Date.now();
+        onTag(attackerId, target.id);
+        break;
+      }
+    }
+  }
+
+  private syncLabel(sprite: SpriteEntry, isIt: boolean): void {
+    sprite.label.setPosition(sprite.body.x - 36, sprite.body.y - 42);
+    if (sprite.crown) {
+      sprite.crown.setPosition(sprite.body.x - 10, sprite.body.y - 68);
+    }
+    if (isIt && !sprite.crown) {
+      sprite.crown = this.add.text(sprite.body.x - 10, sprite.body.y - 68, 'CROWN', { color: '#fecaca', fontSize: '16px' }).setDepth(6);
+    } else if (!isIt && sprite.crown) {
+      sprite.crown.destroy();
+      sprite.crown = undefined;
+    }
+    sprite.body.setTint(isIt ? 0xff5f5f : sprite.baseTint);
   }
 
   private createPlayerTexture(): void {
@@ -215,24 +304,15 @@ export class GameScene extends Phaser.Scene {
         ? this.add.text(body.x - 10, body.y - 68, 'CROWN', { color: '#fecaca', fontSize: '16px' }).setDepth(6)
         : undefined;
 
-      this.playerSprites.set(player.id, { body, label, crown });
+      this.playerSprites.set(player.id, { body, label, crown, baseTint: tint });
       return;
     }
 
     existing.body.setPosition(player.x, player.y);
+    existing.baseTint = tint;
     existing.body.setTint(isIt ? 0xff5f5f : tint);
     existing.label.setText(player.nickname);
-    existing.label.setPosition(existing.body.x - 36, existing.body.y - 42);
-
-    if (isIt) {
-      if (!existing.crown) {
-        existing.crown = this.add.text(existing.body.x - 10, existing.body.y - 68, 'CROWN', { color: '#fecaca', fontSize: '16px' }).setDepth(6);
-      }
-      existing.crown.setPosition(existing.body.x - 10, existing.body.y - 68);
-    } else if (existing.crown) {
-      existing.crown.destroy();
-      existing.crown = undefined;
-    }
+    this.syncLabel(existing, isIt);
   }
 
   private resolveWallCollision(body: Phaser.Physics.Arcade.Image, bounds: Phaser.Geom.Rectangle): void {
@@ -246,4 +326,8 @@ export class GameScene extends Phaser.Scene {
       body.y += playerBounds.centerY < bounds.centerY ? -overlapY : overlapY;
     }
   }
+}
+
+function isIt(player: PlayerState): boolean {
+  return Boolean(player.isIt);
 }

@@ -1,6 +1,29 @@
 import { supabase } from './supabase';
 import { createRoomCode } from '@/utils/roomCode';
-import { PlayerState, RoomState, RoundDuration, MapId, MatchResult } from '@/types/game';
+import { PlayerState, RoomState, RoundDuration, MapId, MatchResult, ControlScheme } from '@/types/game';
+
+const LOCAL_ROOM_ID = '00000000-0000-0000-0000-000000000001';
+
+function createLocalPlayers(roomId: string, nickname: string, hostId: string): PlayerState[] {
+  const schemes: ControlScheme[] = ['wasd', 'arrows'];
+  const colors = ['#7dd3fc', '#fda4af'];
+  return schemes.map((controlScheme, index) => ({
+    id: index === 0 ? hostId : crypto.randomUUID(),
+    roomId,
+    nickname: index === 0 ? `${nickname} 1` : `${nickname} 2`,
+    isHost: index === 0,
+    isIt: false,
+    score: 0,
+    connected: true,
+    ready: true,
+    color: colors[index],
+    x: 180 + index * 80,
+    y: 180 + index * 80,
+    speedBoostUntil: 0,
+    lastUpdatedAt: Date.now(),
+    controlScheme,
+  }));
+}
 
 export async function createRoom(hostId: string, mapId: MapId, roundDuration: RoundDuration): Promise<RoomState> {
   if (!supabase) {
@@ -49,6 +72,26 @@ export async function createRoom(hostId: string, mapId: MapId, roundDuration: Ro
   }
 
   throw new Error('Failed to create room');
+}
+
+export function createLocalRoom(hostId: string, nickname: string, mapId: MapId, roundDuration: RoundDuration): { room: RoomState; players: PlayerState[] } {
+  const room: RoomState = {
+    id: LOCAL_ROOM_ID,
+    roomCode: 'LOCAL',
+    hostId,
+    selectedMap: mapId,
+    roundDuration,
+    status: 'lobby',
+    roundNumber: 1,
+    remainingTime: roundDuration,
+    currentItId: null,
+    createdAt: new Date().toISOString(),
+  };
+
+  return {
+    room,
+    players: createLocalPlayers(room.id, nickname, hostId),
+  };
 }
 
 export async function getRoomByCode(roomCode: string): Promise<RoomState | null> {

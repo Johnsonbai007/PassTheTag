@@ -2,21 +2,23 @@ import { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
 import { GameScene } from '@/scenes/GameScene';
 import { MAPS } from '@/utils/constants';
-import { MapId, PlayerState, RoomState } from '@/types/game';
+import { MapId, PlayMode, PlayerState, RoomState } from '@/types/game';
 
 interface UsePhaserGameArgs {
   containerId: string;
+  mode: PlayMode;
   room: RoomState | null;
   players: PlayerState[];
   localPlayerId: string | null;
-  onMove: (x: number, y: number) => void;
-  onTag: (taggedPlayerId: string) => void;
+  onMove: (playerId: string, x: number, y: number) => void;
+  onTag: (actorId: string, taggedPlayerId: string) => void;
   onTeleport: (playerId: string, x: number, y: number) => void;
   onBounce: (playerId: string, impulseX: number, impulseY: number) => void;
 }
 
 export function usePhaserGame({
   containerId,
+  mode,
   room,
   players,
   localPlayerId,
@@ -55,6 +57,7 @@ export function usePhaserGame({
       },
       scene: [
         new GameScene({
+          mode,
           map: MAPS[room.selectedMap as MapId],
           room,
           players,
@@ -71,7 +74,7 @@ export function usePhaserGame({
       gameRef.current?.destroy(true);
       gameRef.current = null;
     };
-  }, [containerId, room?.id, room?.selectedMap]);
+  }, [containerId, mode, room?.id, room?.selectedMap]);
 
   useEffect(() => {
     const scene = gameRef.current?.scene.getScene('GameScene') as GameScene | undefined;

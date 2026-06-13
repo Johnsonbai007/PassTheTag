@@ -6,7 +6,7 @@ import { useGameStore } from '@/stores/gameStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import { useRoomChannel } from '@/hooks/useRoomChannel';
 import { BroadcastMessage, PlayerState } from '@/types/game';
-import { insertMatchResult, setPlayerConnection, updateRoom } from '@/services/rooms';
+import { createLocalRoom, insertMatchResult, setPlayerConnection, updateRoom } from '@/services/rooms';
 
 type ViewState = 'home' | 'lobby' | 'game';
 
@@ -23,6 +23,7 @@ export default function App() {
   const localPlayerId = useGameStore((state) => state.localPlayerId);
   const roomCode = useSessionStore((state) => state.roomCode);
   const playerId = useSessionStore((state) => state.playerId);
+  const playMode = useSessionStore((state) => state.playMode);
 
   const handleMessage = useMemo(() => {
     return async (message: BroadcastMessage): Promise<void> => {
@@ -46,6 +47,7 @@ export default function App() {
             y: message.y,
             speedBoostUntil: message.speedBoostUntil,
             lastUpdatedAt: message.timestamp,
+            controlScheme: existing?.controlScheme,
           });
           break;
         }
@@ -96,13 +98,21 @@ export default function App() {
     };
   }, [playerId, setHost, setPlayers, setRoom]);
 
-  const roomChannel = useRoomChannel({
-    roomCode,
-    playerId,
-    onMessage: (message) => {
-      void handleMessage(message);
-    },
-  });
+  const roomChannel = useRoomChannel(
+    playMode === 'online'
+      ? {
+          roomCode,
+          playerId,
+          onMessage: (message) => {
+            void handleMessage(message);
+          },
+        }
+      : {
+          roomCode: null,
+          playerId,
+          onMessage: () => undefined,
+        },
+  );
 
   useEffect(() => {
     if (!roomCode || !room) return;
@@ -111,14 +121,16 @@ export default function App() {
   }, [playerId, room, roomCode, setLocalPlayerId]);
 
   useEffect(() => {
+    if (playMode !== 'online') return;
     const handleDisconnect = (): void => {
       if (playerId) void setPlayerConnection(playerId, false);
     };
     window.addEventListener('beforeunload', handleDisconnect);
     return () => window.removeEventListener('beforeunload', handleDisconnect);
-  }, [playerId]);
+  }, [playerId, playMode]);
 
   useEffect(() => {
+    if (playMode !== 'online') return;
     const handlePageHide = (): void => {
       if (!roomChannel) return;
       void roomChannel.send({ type: 'player:leave', playerId });
@@ -127,7 +139,7 @@ export default function App() {
 
     window.addEventListener('pagehide', handlePageHide);
     return () => window.removeEventListener('pagehide', handlePageHide);
-  }, [playerId, roomChannel]);
+  }, [playerId, playMode, roomChannel]);
 
   useEffect(() => {
     if (!room || room.status !== 'running') return;
@@ -151,6 +163,7 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (playMode !== 'online') return;
     if (!room || players.length === 0) return;
     if (players.some((player) => player.id === room.hostId)) return;
 
@@ -166,7 +179,7 @@ export default function App() {
       newHostId: nextHost.id,
       timestamp: Date.now(),
     });
-  }, [broadcast, playerId, players, room, setHost, setRoom]);
+  }, [broadcast, playerId, playMode, players, room, setHost, setRoom]);
 
   async function endRound(): Promise<void> {
     if (!room) return;
@@ -191,33 +204,41 @@ export default function App() {
 
     setPlayers(nextPlayers);
     setRoom(nextRoom);
-    await insertMatchResult({ roomId: room.id, loserId: loser.id, roundNumber: room.roundNumber });
-    await updateRoom(room.id, { status: 'running' });
-    await broadcast({
-      type: 'game:round-end',
-      roomId: room.id,
-      loserId: loser.id,
-      nextItId: nextIt.id,
-      roundNumber: room.roundNumber,
-      scores: Object.fromEntries(nextPlayers.map((player) => [player.id, player.score])),
-      timestamp: Date.now(),
-    });
+
+    if (playMode === 'online') {
+      await insertMatchResult({ roomId: room.id, loserId: loser.id, roundNumber: room.roundNumber });
+      await updateRoom(room.id, { status: 'running' });
+      await broadcast({
+        type: 'game:round-end',
+        roomId: room.id,
+        loserId: loser.id,
+        nextItId: nextIt.id,
+        roundNumber: room.roundNumber,
+        scores: Object.fromEntries(nextPlayers.map((player) => [player.id, player.score])),
+        timestamp: Date.now(),
+      });
+    }
   }
 
-  async function handleMove(x: number, y: number): Promise<void> {
+  async function handleMove(playerIdToMove: string, x: number, y: number): Promise<void> {
     if (!room) return;
-    const me = players.find((player) => player.id === playerId);
+    const me = players.find((player) => player.id === playerIdToMove);
     if (!me) return;
     mergePlayer({ ...me, x, y, lastUpdatedAt: Date.now() });
-    await broadcast({ type: 'player:move', playerId, x, y, vx: 0, vy: 0, speedBoostUntil: me.speedBoostUntil, timestamp: Date.now() });
+
+    if (playMode === 'online' && playerIdToMove === playerId) {
+      await broadcast({ type: 'player:move', playerId: playerIdToMove, x, y, vx: 0, vy: 0, speedBoostUntil: me.speedBoostUntil, timestamp: Date.now() });
+    }
   }
 
-  async function handleTag(taggedPlayerId: string): Promise<void> {
+  async function handleTag(actorId: string, taggedPlayerId: string): Promise<void> {
     if (!room) return;
-    const currentIt = players.find((player) => player.isIt);
-    if (!currentIt || currentIt.id !== playerId) return;
+    const currentIt = players.find((player) => player.id === actorId);
+    const tagged = players.find((player) => player.id === taggedPlayerId);
+    if (!currentIt || !tagged) return;
+
     const updated = players.map((player) =>
-      player.id === currentIt.id
+      player.id === actorId
         ? { ...player, isIt: false, score: player.score + 1 }
         : player.id === taggedPlayerId
           ? { ...player, isIt: true }
@@ -225,26 +246,31 @@ export default function App() {
     );
     setPlayers(updated);
     setRoom({ ...room, currentItId: taggedPlayerId });
-    await broadcast({
-      type: 'game:tag',
-      roomId: room.id,
-      taggedPlayerId,
-      previousItId: currentIt.id,
-      timestamp: Date.now(),
-    });
+
+    if (playMode === 'online' && actorId === playerId) {
+      await broadcast({
+        type: 'game:tag',
+        roomId: room.id,
+        taggedPlayerId,
+        previousItId: actorId,
+        timestamp: Date.now(),
+      });
+    }
   }
 
   async function handleTeleport(playerIdToMove: string, x: number, y: number): Promise<void> {
-    if (playerIdToMove !== playerId) return;
-    const me = players.find((player) => player.id === playerId);
+    if (!room) return;
+    const me = players.find((player) => player.id === playerIdToMove);
     if (!me) return;
     mergePlayer({ ...me, x, y, lastUpdatedAt: Date.now(), speedBoostUntil: me.speedBoostUntil });
-    await broadcast({ type: 'player:move', playerId, x, y, vx: 0, vy: 0, speedBoostUntil: me.speedBoostUntil, timestamp: Date.now() });
+    if (playMode === 'online' && playerIdToMove === playerId) {
+      await broadcast({ type: 'player:move', playerId: playerIdToMove, x, y, vx: 0, vy: 0, speedBoostUntil: me.speedBoostUntil, timestamp: Date.now() });
+    }
   }
 
   async function handleBounce(playerIdToMove: string, impulseX: number, impulseY: number): Promise<void> {
-    if (playerIdToMove !== playerId) return;
-    const me = players.find((player) => player.id === playerId);
+    if (!room) return;
+    const me = players.find((player) => player.id === playerIdToMove);
     if (!me) return;
     const boosted = {
       ...me,
@@ -254,16 +280,18 @@ export default function App() {
       lastUpdatedAt: Date.now(),
     };
     mergePlayer(boosted);
-    await broadcast({
-      type: 'player:move',
-      playerId,
-      x: boosted.x,
-      y: boosted.y,
-      vx: impulseX,
-      vy: impulseY,
-      speedBoostUntil: boosted.speedBoostUntil,
-      timestamp: Date.now(),
-    });
+    if (playMode === 'online' && playerIdToMove === playerId) {
+      await broadcast({
+        type: 'player:move',
+        playerId: playerIdToMove,
+        x: boosted.x,
+        y: boosted.y,
+        vx: impulseX,
+        vy: impulseY,
+        speedBoostUntil: boosted.speedBoostUntil,
+        timestamp: Date.now(),
+      });
+    }
   }
 
   async function startMatch(): Promise<void> {
@@ -290,8 +318,11 @@ export default function App() {
     setRoom(nextRoom);
     setPlayers(updatedPlayers);
     setView('game');
-    await updateRoom(room.id, { status: 'running' });
-    await broadcast({ type: 'game:start', room: nextRoom, players: updatedPlayers });
+
+    if (playMode === 'online') {
+      await updateRoom(room.id, { status: 'running' });
+      await broadcast({ type: 'game:start', room: nextRoom, players: updatedPlayers });
+    }
   }
 
   async function restartMatch(): Promise<void> {
@@ -307,8 +338,11 @@ export default function App() {
     setRoom(nextRoom);
     setPlayers(resetPlayers);
     setView('lobby');
-    await updateRoom(room.id, { status: 'lobby' });
-    await broadcast({ type: 'game:state', room: nextRoom, players: resetPlayers, timestamp: Date.now() });
+
+    if (playMode === 'online') {
+      await updateRoom(room.id, { status: 'lobby' });
+      await broadcast({ type: 'game:state', room: nextRoom, players: resetPlayers, timestamp: Date.now() });
+    }
   }
 
   function handleEnteredRoom(): void {
@@ -322,7 +356,7 @@ export default function App() {
       <LobbyPage onStartMatch={startMatch} onRestartMatch={restartMatch} />
     ) : (
       <div className="h-full p-4">
-        <GameCanvas room={room} onMove={handleMove} onTag={handleTag} onTeleport={handleTeleport} onBounce={handleBounce} />
+        <GameCanvas mode={playMode} room={room} onMove={handleMove} onTag={handleTag} onTeleport={handleTeleport} onBounce={handleBounce} />
       </div>
     );
 

@@ -3,17 +3,18 @@ import { useGameStore } from '@/stores/gameStore';
 import { usePhaserGame } from '@/hooks/usePhaserGame';
 import { GameHUD } from './GameHUD';
 import { Leaderboard } from './Leaderboard';
-import { RoomState } from '@/types/game';
+import { PlayMode, RoomState } from '@/types/game';
 
 interface GameCanvasProps {
+  mode: PlayMode;
   room: RoomState | null;
-  onMove: (x: number, y: number) => void;
-  onTag: (taggedPlayerId: string) => void;
+  onMove: (playerId: string, x: number, y: number) => void;
+  onTag: (actorId: string, taggedPlayerId: string) => void;
   onTeleport: (playerId: string, x: number, y: number) => void;
   onBounce: (playerId: string, impulseX: number, impulseY: number) => void;
 }
 
-export function GameCanvas({ room, onMove, onTag, onTeleport, onBounce }: GameCanvasProps) {
+export function GameCanvas({ mode, room, onMove, onTag, onTeleport, onBounce }: GameCanvasProps) {
   const players = useGameStore((state) => state.players);
   const localPlayerId = useGameStore((state) => state.localPlayerId);
   const connectionState = useGameStore((state) => state.connectionState);
@@ -27,6 +28,7 @@ export function GameCanvas({ room, onMove, onTag, onTeleport, onBounce }: GameCa
 
   usePhaserGame({
     containerId: 'game-canvas',
+    mode,
     room,
     players,
     localPlayerId,

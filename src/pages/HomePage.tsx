@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useGameStore } from '@/stores/gameStore';
 import { useSessionStore } from '@/stores/sessionStore';
-import { createRoom, getRoomByCode, listPlayers, createOrUpdatePlayer } from '@/services/rooms';
+import { createRoom, getRoomByCode, listPlayers, createOrUpdatePlayer, createLocalRoom } from '@/services/rooms';
 import { PlayerState } from '@/types/game';
 import { MAP_IDS, ROUND_DURATIONS } from '@/utils/constants';
 import { isRoomCode } from '@/utils/roomCode';
@@ -15,6 +15,7 @@ export function HomePage({ onEnteredRoom }: HomePageProps) {
   const setNickname = useSessionStore((state) => state.setNickname);
   const playerId = useSessionStore((state) => state.playerId);
   const setRoomCode = useSessionStore((state) => state.setRoomCode);
+  const setPlayMode = useSessionStore((state) => state.setPlayMode);
   const setLocalPlayerId = useGameStore((state) => state.setLocalPlayerId);
   const setRoom = useGameStore((state) => state.setRoom);
   const setPlayers = useGameStore((state) => state.setPlayers);
@@ -22,6 +23,7 @@ export function HomePage({ onEnteredRoom }: HomePageProps) {
   const [error, setError] = useState<string | null>(null);
 
   async function handleCreateRoom(): Promise<void> {
+    setPlayMode('online');
     const room = await createRoom(playerId, MAP_IDS[0], ROUND_DURATIONS[1]);
     const hostPlayer: PlayerState = {
       id: playerId,
@@ -46,7 +48,18 @@ export function HomePage({ onEnteredRoom }: HomePageProps) {
     onEnteredRoom(room.roomCode);
   }
 
+  function handleCreateLocalRoom(): void {
+    setPlayMode('local');
+    const { room, players } = createLocalRoom(playerId, nickname, MAP_IDS[0], ROUND_DURATIONS[1]);
+    setRoom(room);
+    setPlayers(players);
+    setRoomCode(room.roomCode);
+    setLocalPlayerId(playerId);
+    onEnteredRoom(room.roomCode);
+  }
+
   async function handleJoinRoom(): Promise<void> {
+    setPlayMode('online');
     const code = joinCode.trim().toUpperCase();
     if (!isRoomCode(code)) {
       setError('Enter a valid 6-character room code.');
@@ -106,16 +119,20 @@ export function HomePage({ onEnteredRoom }: HomePageProps) {
           </p>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <button onClick={handleCreateRoom} className="rounded-2xl bg-sky-400 px-5 py-4 font-display text-lg text-slate-950 transition hover:bg-sky-300">
-              Create Room
+            <button onClick={handleCreateLocalRoom} className="rounded-2xl bg-emerald-400 px-5 py-4 font-display text-lg text-slate-950 transition hover:bg-emerald-300">
+              Local Multiplayer
             </button>
-            <button
-              onClick={handleJoinRoom}
-              className="rounded-2xl border border-white/10 bg-white/5 px-5 py-4 font-display text-lg text-white transition hover:bg-white/10"
-            >
-              Join Room
+            <button onClick={handleCreateRoom} className="rounded-2xl bg-sky-400 px-5 py-4 font-display text-lg text-slate-950 transition hover:bg-sky-300">
+              Online Multiplayer
             </button>
           </div>
+
+          <button
+            onClick={handleJoinRoom}
+            className="w-full rounded-2xl border border-white/10 bg-white/5 px-5 py-4 font-display text-lg text-white transition hover:bg-white/10"
+          >
+            Join Room
+          </button>
 
           <div className="rounded-3xl border border-white/10 bg-white/5 p-5 text-sm text-slate-300">
             No login required. Supabase Realtime keeps movement, tags, host changes, and round transitions synced across clients.
